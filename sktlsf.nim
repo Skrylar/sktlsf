@@ -7,13 +7,12 @@ type
         minimum_block: int
         fla: uint32
 
-    UsedBlockHeader = object of RootObj
+    BlockHeader = object of RootObj
         # NB: allocations are always aligned to four byte boundaries,
         # so the lowest two bits are stolen for metadata
         aleph: uint
         previous_physical_block: pointer
-    
-    FreeBlockHeader = object of UsedBlockHeader
+        # don't write to these two if the header is in use
         next_free, prev_free: pointer
 
 const
@@ -26,28 +25,28 @@ const
     SizeMask = (uint.high xor BusyBit) xor LastInPoolBit
     SizeMask2 = SizeMask xor typeof(SizeMask).high
 
-proc last_in_pool(header: UsedBlockHeader): bool =
+proc last_in_pool(header: BlockHeader): bool =
     return (header.aleph and LastInPoolBit) != 0
 
-proc `last_in_pool=`(header: var UsedBlockHeader; flag: bool) =
+proc `last_in_pool=`(header: var BlockHeader; flag: bool) =
     var z = header.aleph and LastInPoolMask
     if flag:
         z += LastInPoolBit
     header.aleph = z
 
-proc busy(header: UsedBlockHeader): bool =
+proc busy(header: BlockHeader): bool =
     return (header.aleph and BusyBit) != 0
 
-proc `busy=`(header: var UsedBlockHeader; flag: bool) =
+proc `busy=`(header: var BlockHeader; flag: bool) =
     var z = header.aleph and BusyMask
     if flag:
         z += BusyBit
     header.aleph = z
 
-proc size(header: UsedBlockHeader): uint =
+proc size(header: BlockHeader): uint =
     return header.size and SizeMask
 
-proc `size=`(header: var UsedBlockHeader; size: uint) =
+proc `size=`(header: var BlockHeader; size: uint) =
     header.aleph = (header.aleph and SizeMask2) + (size and SizeMask)
 
 proc second_level_count(sli: uint): int =
@@ -77,7 +76,7 @@ proc initialize_pool*(buffer: pointer; buffer_size: cuint; sli: int = 4) =
     let sli_size = ((second_level_count(sli.uint) * 33) * pointer.sizeof)
 
     let minimum_pool_size = PoolHeader.sizeof +
-        FreeBlockHeader.sizeof +
+        BlockHeader.sizeof +
         sli_size
 
     if buffer_size < minimum_pool_size.cuint:
@@ -90,14 +89,14 @@ proc initialize_pool*(buffer: pointer; buffer_size: cuint; sli: int = 4) =
     var header = cast[ptr PoolHeader](buffer)
     header.fli = min(log2(buffer_size.float), 31).int
     header.sli = sli
-    header.minimum_block = UsedBlockHeader.sizeof
+    header.minimum_block = BlockHeader.sizeof
     header.fla = 0
 
     # zero out second level index
     zeroMem(cast[pointer](cast[int](buffer) + PoolHeader.sizeof), sli_size)
 
     # fill out initial block
-    var entry = cast[ptr FreeBlockHeader](data_block_at)
+    var entry = cast[ptr BlockHeader](data_block_at)
     entry[].size = (buffer_size.int - data_block).uint
     entry.previous_physical_block = nil
     entry.next_free = nil
