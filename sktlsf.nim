@@ -110,6 +110,9 @@ proc destroy_pool*(buffer: pointer) =
     var header = cast[ptr PoolHeader](buffer)
     header.fla = 0
 
+proc release*(buffer: pointer; blocc: pointer) =
+    discard
+
 proc claim*(buffer: pointer; size: cuint): pointer =
     var header = cast[ptr PoolHeader](buffer)
     var fs = mapping(size, header.sli.cuint)
@@ -117,10 +120,22 @@ proc claim*(buffer: pointer; size: cuint): pointer =
     # no buckets at top level so we obviously can't do
     if header.fla == 0: return nil
 
-    discard
-
-proc release*(buffer: pointer; blocc: pointer) =
-    discard
+    let sli_size = second_level_count(header.sli.uint) + 1
+    for top in fs.f..31:
+        let bip = 1 shl top
+        if (header.fla and bip.uint32) == 0: continue
+        # unpack the bit mask
+        let bop = cast[int](buffer) + PoolHeader.sizeof + (top.int * sli_size.int * pointer.sizeof.int)
+        var mask = cast[ptr uint](cast[pointer](bop + cast[int](buffer)))
+        if mask[] == 0: continue
+        for second in fs.s..31:
+            if (mask[] and (1'u shl second)) == 0: continue
+            var unmasked = cast[ptr uint](cast[uint](mask) + (pointer.sizeof.uint * second))
+            if unmasked[] == 0: continue
+            var blocc = cast[ptr BlockHeader](cast[pointer](unmasked[]))
+            # TODO split blocks
+            # TODO remove allocated block from free lists
+            return cast[pointer](cast[uint](blocc) + (pointer.sizeof * 2))
 
 var buffer = alloc(8192)
 initialize_pool(buffer, 8192, 4)
