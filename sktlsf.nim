@@ -115,6 +115,7 @@ proc release*(buffer: pointer; blocc: pointer) =
 
 proc claim*(buffer: pointer; size: cuint): pointer =
     var header = cast[ptr PoolHeader](buffer)
+    assert header.minimum_block >= BlockHeader.sizeof
     var fs = mapping(size, header.sli.cuint)
 
     # no buckets at top level so we obviously can't do
@@ -129,12 +130,33 @@ proc claim*(buffer: pointer; size: cuint): pointer =
         var mask = cast[ptr uint](cast[pointer](bop + cast[int](buffer)))
         if mask[] == 0: continue
         for second in fs.s..31:
-            if (mask[] and (1'u shl second)) == 0: continue
+            let z = 1'u shl second
+            if (mask[] and z) == 0: continue
             var unmasked = cast[ptr uint](cast[uint](mask) + (pointer.sizeof.uint * second))
             if unmasked[] == 0: continue
             var blocc = cast[ptr BlockHeader](cast[pointer](unmasked[]))
+
+            # make sure we are grabbing sizes that are multiples of four
+            var grabass = size
+            var offset = grabass mod 4
+            grabass += offset
+
+            # cut block from tree
+            unmasked[] = bocc.next_free
+            if unmasked[] == 0:
+                # unmark this second level as open
+                mask[] -= z
+                # and possibly unmark at first level
+                if mask[] == 0:
+                    header.fla -= (1'u shl top)
+
+            # only split if the newly created block would not be too small
+            assert blocc.size >= header.minimum_block
+            if (blocc.size - header.minimum_block) > grabass:
+
             # TODO split blocks
             # TODO remove allocated block from free lists
+
             return cast[pointer](cast[uint](blocc) + (pointer.sizeof * 2))
 
 var buffer = alloc(8192)
