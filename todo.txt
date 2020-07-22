@@ -1,0 +1,3 @@
+(A) Releasing freed or split chunks back to the pool
+Wrap pool in a distinct pointer when its created
+Track amount of free space in the pool

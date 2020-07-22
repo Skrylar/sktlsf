@@ -9,6 +9,8 @@ type
         sli: int
         minimum_block: int
         fla: uint32
+        size: uint
+        freemem: uint
 
     BlockHeader = object of RootObj
         # NB: allocations are always aligned to four byte boundaries,
@@ -101,6 +103,8 @@ proc initialize_pool*(buffer: pointer; buffer_size: cuint; sli: int = 4) =
     header.sli = sli
     header.minimum_block = BlockHeader.sizeof
     header.fla = 0
+    header.freemem = buffer_size - (FreeHeaderFieldCount * pointer.sizeof)
+    header.size = buffer_size
 
     # zero out second level index
     zeroMem(cast[pointer](cast[int](buffer) + PoolHeader.sizeof), sli_size)
