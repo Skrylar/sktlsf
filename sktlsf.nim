@@ -47,13 +47,19 @@ proc `busy=`(header: var BlockHeader; flag: bool) =
     header.aleph = z
 
 proc size(header: BlockHeader): uint =
-    return header.size and SizeMask
+    return header.aleph and SizeMask
 
 proc `size=`(header: var BlockHeader; size: uint) =
     header.aleph = (header.aleph and SizeMask2) + (size and SizeMask)
 
 proc second_level_count(sli: uint): int =
-    return floor(pow(2, sli.float)).int
+    return ceil(pow(2, sli.float)).int
+
+proc calculate_sli_strip_size(sli: int): int =
+    return (second_level_count(sli.uint) * pointer.sizeof) + uint32.sizeof
+
+proc calculate_sli_size(sli: int): int =
+    return calculate_sli_strip_size(sli) * 32
 
 # XXX counts number of zero bits from MSB down, but is gcc intrinsic
 proc clz(x: cuint): cuint {.importc: "__builtin_clz".}
@@ -76,7 +82,8 @@ proc initialize_pool*(buffer: pointer; buffer_size: cuint; sli: int = 4) =
         raise newException(RangeError, "Second Level Indices must be in range [1, 32]")
     # TODO flail if sli is also not a power of two
 
-    let sli_size = ((second_level_count(sli.uint) * 33) * pointer.sizeof)
+    let sli_strip = calculate_sli_strip_size(sli)
+    let sli_size = calculate_sli_size(sli)
 
     let minimum_pool_size = PoolHeader.sizeof +
         BlockHeader.sizeof +
@@ -105,9 +112,19 @@ proc initialize_pool*(buffer: pointer; buffer_size: cuint; sli: int = 4) =
     entry.next_free = nil
     entry.prev_free = nil
 
-    # insert entry in to index
+    # insert entry in to first level index
     let fs = mapping(buffer_size, sli.cuint)
     header.fla += 1.uint32 shl fs.f.uint32
+    echo("TOP ", fs.f)
+
+    # insert entry in to second level index
+    let bop = cast[int](buffer) + PoolHeader.sizeof + (fs.f.int * sli_strip.int)
+    var mask = cast[ptr uint32](bop)
+    mask[] = 1'u32 shl fs.s.uint32
+
+    # insert pointer in to second level slot
+    var unmasked = cast[ptr pointer](cast[uint](mask) + uint32.sizeof.uint + (pointer.sizeof.uint * fs.s))
+    unmasked[] = cast[pointer](data_block_at)
 
 proc destroy_pool*(buffer: pointer) =
     var header = cast[ptr PoolHeader](buffer)
@@ -124,19 +141,28 @@ proc claim*(buffer: pointer; size: cuint): pointer =
     # no buckets at top level so we obviously can't do
     if header.fla == 0: return nil
 
-    let sli_size = second_level_count(header.sli.uint) + 1
+    let sli_strip = calculate_sli_strip_size(header.sli)
+    let sli_size = calculate_sli_size(header.sli)
+
     for top in fs.f..31:
         let bip = 1 shl top
         if (header.fla and bip.uint32) == 0: continue
+        echo("OK 1 AT ", top)
         # unpack the bit mask
-        let bop = cast[int](buffer) + PoolHeader.sizeof + (top.int * sli_size.int * pointer.sizeof.int)
-        var mask = cast[ptr uint](cast[pointer](bop + cast[int](buffer)))
+        let bop = cast[int](buffer) + PoolHeader.sizeof + (sli_strip * top.int)
+        var mask = cast[ptr uint32](bop)
+        echo("MASK: ", mask[])
         if mask[] == 0: continue
+        echo("OK 2")
+        echo("MASK: ", mask[])
         for second in fs.s..31:
             let z = 1'u shl second
+            echo(z)
             if (mask[] and z) == 0: continue
-            var unmasked = cast[ptr pointer](cast[uint](mask) + (pointer.sizeof.uint * second))
+            echo("OK 3")
+            var unmasked = cast[ptr pointer](cast[uint](mask) + uint32.sizeof.uint + (pointer.sizeof.uint * second))
             if unmasked[] == nil: continue
+            echo("OK 4")
             var blocc = cast[ptr BlockHeader](cast[pointer](unmasked[]))
             blocc[].busy = true
 
@@ -150,7 +176,7 @@ proc claim*(buffer: pointer; size: cuint): pointer =
             unmasked[] = blocc.next_free
             if unmasked[] == nil:
                 # unmark this second level as open
-                mask[] -= z
+                mask[] -= z.uint32
                 # and possibly unmark at first level
                 if mask[] == 0:
                     header.fla -= (1'u32 shl top.uint32)
@@ -177,6 +203,9 @@ proc claim*(buffer: pointer; size: cuint): pointer =
 var buffer = alloc(8192)
 initialize_pool(buffer, 8192, 4)
 var owo = claim(buffer, 1024)
+assert owo != nil
+var uwu = claim(buffer, 1024)
+assert uwu != nil
 destroy_pool(buffer)
 
 echo(mapping(460, 4))
