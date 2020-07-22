@@ -1,5 +1,8 @@
 import math, options
 
+const
+    FreeHeaderFieldCount = 2
+
 type
     PoolHeader = object
         fli: int
@@ -132,35 +135,48 @@ proc claim*(buffer: pointer; size: cuint): pointer =
         for second in fs.s..31:
             let z = 1'u shl second
             if (mask[] and z) == 0: continue
-            var unmasked = cast[ptr uint](cast[uint](mask) + (pointer.sizeof.uint * second))
-            if unmasked[] == 0: continue
+            var unmasked = cast[ptr pointer](cast[uint](mask) + (pointer.sizeof.uint * second))
+            if unmasked[] == nil: continue
             var blocc = cast[ptr BlockHeader](cast[pointer](unmasked[]))
+            blocc[].busy = true
 
             # make sure we are grabbing sizes that are multiples of four
             var grabass = size
+            if grabass < header.minimum_block.uint: grabass = header.minimum_block.cuint
             var offset = grabass mod 4
             grabass += offset
 
             # cut block from tree
-            unmasked[] = bocc.next_free
-            if unmasked[] == 0:
+            unmasked[] = blocc.next_free
+            if unmasked[] == nil:
                 # unmark this second level as open
                 mask[] -= z
                 # and possibly unmark at first level
                 if mask[] == 0:
-                    header.fla -= (1'u shl top)
+                    header.fla -= (1'u32 shl top.uint32)
 
             # only split if the newly created block would not be too small
-            assert blocc.size >= header.minimum_block
-            if (blocc.size - header.minimum_block) > grabass:
+            let bloccsize = blocc[].size
+            if (grabass + header.minimum_block.uint) <= bloccsize:
+                var xptr = cast[uint](blocc)
+                xptr += (pointer.sizeof * 2) # step over control header
+                xptr += grabass # step over allocated region
+                var blocc2 = cast[ptr BlockHeader](xptr)
+                blocc2[].aleph = 0
+                blocc2[].size = bloccsize - (grabass + (pointer.sizeof * FreeHeaderFieldCount))
+                blocc2[].previous_physical_block = cast[pointer](blocc)
+                blocc[].size = grabass
+                release(buffer, blocc2)
+            
+            # you don't need to change blocc's size
+            # i thought you did but its already the size of the whole block
+            # and if it was too small we couldn't split it anyway
 
-            # TODO split blocks
-            # TODO remove allocated block from free lists
-
-            return cast[pointer](cast[uint](blocc) + (pointer.sizeof * 2))
+            return cast[pointer](cast[uint](blocc) + (pointer.sizeof * FreeHeaderFieldCount))
 
 var buffer = alloc(8192)
 initialize_pool(buffer, 8192, 4)
+var owo = claim(buffer, 1024)
 destroy_pool(buffer)
 
 echo(mapping(460, 4))
