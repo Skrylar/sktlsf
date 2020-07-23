@@ -135,7 +135,49 @@ proc destroy_pool*(buffer: pointer) =
     header.fla = 0
 
 proc release*(buffer: pointer; blocc: pointer) =
-    discard
+    var poolheader = cast[ptr PoolHeader](buffer)
+    assert cast[uint](blocc) > FreeHeaderFieldCount * pointer.sizeof
+    var header = cast[ptr BlockHeader](cast[uint](blocc) - (FreeHeaderFieldCount * pointer.sizeof))
+
+    let sli_strip = calculate_sli_strip_size(poolheader.sli)
+    let sli_size = calculate_sli_size(poolheader.sli)
+
+    # merge as many previous physical blocks as possible
+    if header[].previous_physical_block != nil:
+        while header[].previous_physical_block != nil:
+            var prior_header = cast[ptr BlockHeader](header[].previous_physical_block)
+            if prior_header[].busy == false:
+                echo("MERGE OK")
+
+                # work out pointers to deindex the block
+                var fs = mapping(prior_header[].size.cuint, poolheader.sli.cuint)
+                let bop = cast[uint](buffer) + PoolHeader.sizeof.uint + (sli_strip.cuint * fs.f)
+                var mask = cast[ptr uint32](bop)
+                var unmasked = cast[ptr pointer](cast[uint](mask) + uint32.sizeof.uint + (pointer.sizeof.uint * fs.s))
+                let z = 1 shl fs.s
+
+                # check if we need to update the mask
+                if unmasked[] == cast[pointer](prior_header):
+                    # cut block from tree
+                    unmasked[] = prior_header.next_free
+                    if unmasked[] == nil:
+                        # unmark this second level as open
+                        mask[] -= z.uint32
+                        # and possibly unmark at first level
+                        if mask[] == 0:
+                            poolheader.fla -= (1'u32 shl fs.f.uint32)
+
+                # merge blocks
+                prior_header[].size = prior_header[].size + header[].size + (FreeHeaderFieldCount * pointer.sizeof)
+
+                # update previous block pointer for next physical block
+                var next_block = cast[ptr BlockHeader](cast[uint](header) + header[].size)
+                if cast[uint](next_block) < (cast[uint](buffer) + poolheader.size):
+                    next_block.previous_physical_block = cast[pointer](prior_header)
+
+                # TODO maybe index new block and do another coalescing
+
+    # TODO index the new block
 
 proc claim*(buffer: pointer; size: cuint): pointer =
     var header = cast[ptr PoolHeader](buffer)
