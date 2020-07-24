@@ -1,4 +1,4 @@
-import math, options
+import math
 
 const
     FreeHeaderFieldCount = 2
@@ -25,19 +25,22 @@ const
     BusyMask = uint.high xor BusyBit
 
     LastInPoolBit = BusyBit + 1
-    LastInPoolMask = uint.high xor LastInPoolBit
+    # LastInPoolMask = uint.high xor LastInPoolBit
 
     SizeMask = (uint.high xor BusyBit) xor LastInPoolBit
     SizeMask2 = SizeMask xor typeof(SizeMask).high
 
-proc last_in_pool(header: BlockHeader): bool =
-    return (header.aleph and LastInPoolBit) != 0
+# XXX this would be so we don't have to store the pool size, but we actually
+# do so we haven't needed them
 
-proc `last_in_pool=`(header: var BlockHeader; flag: bool) =
-    var z = header.aleph and LastInPoolMask
-    if flag:
-        z += LastInPoolBit
-    header.aleph = z
+# proc last_in_pool(header: BlockHeader): bool =
+#     return (header.aleph and LastInPoolBit) != 0
+
+# proc `last_in_pool=`(header: var BlockHeader; flag: bool) =
+#     var z = header.aleph and LastInPoolMask
+#     if flag:
+#         z += LastInPoolBit
+#     header.aleph = z
 
 proc busy(header: BlockHeader): bool =
     return (header.aleph and BusyBit) != 0
@@ -65,7 +68,7 @@ proc calculate_sli_size(sli: int): int =
 
 # XXX counts number of zero bits from MSB down, but is gcc intrinsic
 proc clz(x: cuint): cuint {.importc: "__builtin_clz".}
-proc ctz(x: cuint): cuint {.importc: "__builtin_ctz".}
+# proc ctz(x: cuint): cuint {.importc: "__builtin_ctz".}
 
 proc build_mask(bits: cuint): cuint =
     result = 0
@@ -87,8 +90,6 @@ proc index(buffer: ptr PoolHeader; header: ptr BlockHeader) =
 
     # insert entry in to first level index
     let fs = mapping(header[].size.cuint, buffer.sli.cuint)
-    echo(header[])
-    echo(fs)
     buffer.fla = buffer.fla or (1.uint32 shl fs.f.uint32)
 
     # insert entry in to second level index
@@ -109,7 +110,6 @@ proc unindex(buffer: ptr PoolHeader; header: ptr BlockHeader) =
     assert header != nil
 
     let sli_strip = calculate_sli_strip_size(buffer.sli)
-    let sli_size = calculate_sli_size(buffer.sli)
 
     let fs = mapping(header[].size.cuint, buffer.sli.cuint)
     var mask = cast[ptr uint32](cast[uint](buffer) + PoolHeader.sizeof.uint + (fs.f.uint * sli_strip.uint))
@@ -180,9 +180,6 @@ proc release*(buffer: pointer; blocc: pointer) =
     assert cast[uint](blocc) > FreeHeaderFieldCount * pointer.sizeof
     var header = cast[ptr BlockHeader](cast[uint](blocc) - (FreeHeaderFieldCount * pointer.sizeof))
 
-    let sli_strip = calculate_sli_strip_size(poolheader.sli)
-    let sli_size = calculate_sli_size(poolheader.sli)
-
     # first, inject the new block in to our free table
     header[].busy = false
     index(poolheader, header)
@@ -229,7 +226,6 @@ proc claim*(buffer: pointer; size: cuint): pointer =
     if header.fla == 0: return nil
 
     let sli_strip = calculate_sli_strip_size(header.sli)
-    let sli_size = calculate_sli_size(header.sli)
 
     for top in fs.f..31:
         let bip = 1 shl top
@@ -300,10 +296,3 @@ assert uwu != nil
 var awoo = claim(buffer, 1024)
 assert awoo != nil
 destroy_pool(buffer)
-
-echo(mapping(460, 4))
-echo(mapping(560, 4))
-echo(mapping(660, 4))
-echo(mapping(760, 4))
-echo(mapping(2048, 4))
-echo(mapping(3000, 4))
