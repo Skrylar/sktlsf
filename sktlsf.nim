@@ -1,3 +1,6 @@
+# Copyright 2020 Joshua Cearley.
+# This file is available under the Mozilla Public License, Version 2.
+
 import math
 
 const
@@ -182,6 +185,7 @@ proc release*(buffer: pointer; blocc: pointer) =
 
     # first, inject the new block in to our free table
     header[].busy = false
+    assert header[].size.uint >= poolheader.minimum_block.uint
     index(poolheader, header)
 
     # walk forward in physical blocks to find the rightmost block to start
@@ -191,6 +195,7 @@ proc release*(buffer: pointer; blocc: pointer) =
         let e = (cast[uint](poolheader.size) + cast[uint](buffer))
         while walker < e:
             let prospect = cast[ptr BlockHeader](walker)
+            assert prospect[].size.uint >= poolheader.minimum_block.uint
             if prospect[].busy == false:
                 header = prospect
                 walker += header[].size
@@ -261,7 +266,6 @@ proc claim*(buffer: pointer; size: cuint): pointer =
             let bloccsize = blocc[].size
             if (grabass + header.minimum_block.uint) <= bloccsize:
                 var xptr = cast[uint](blocc)
-                xptr += (pointer.sizeof * 2) # step over control header
                 xptr += grabass # step over allocated region
                 var blocc2 = cast[ptr BlockHeader](xptr)
                 blocc2.aleph = 0
@@ -295,4 +299,7 @@ var uwu = claim(buffer, 1024)
 assert uwu != nil
 var awoo = claim(buffer, 1024)
 assert awoo != nil
+release(buffer, awoo)
+release(buffer, owo)
+release(buffer, uwu)
 destroy_pool(buffer)

@@ -1,7 +1,7 @@
 module=sktlsf
 
 default:V: $module
-    ./$module
+    timeout 1 ./$module
 
 $module: $module.nim
 	nim c -o:$target $prereq
