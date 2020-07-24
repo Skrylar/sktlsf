@@ -1,3 +1,4 @@
 (A) Releasing freed or split chunks back to the pool
 Wrap pool in a distinct pointer when its created
 Track amount of free space in the pool
+Use pointer to the pool header instead of an untyped pointer

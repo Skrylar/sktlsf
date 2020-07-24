@@ -16,9 +16,9 @@ type
         # NB: allocations are always aligned to four byte boundaries,
         # so the lowest two bits are stolen for metadata
         aleph: uint
-        previous_physical_block: pointer
+        previous_physical_block: ptr BlockHeader
         # don't write to these two if the header is in use
-        next_free, prev_free: pointer
+        next_free, prev_free: ptr BlockHeader
 
 const
     BusyBit = 1
@@ -79,12 +79,36 @@ proc mapping(size, sli: cuint): tuple[f, s: cuint] =
     s = s shr (f - sli)
     return (f - 1, s)
 
+proc index(buffer: ptr PoolHeader; header: ptr BlockHeader) =
+    assert buffer != nil
+    assert header != nil
+    assert header[].size != 0
+    let sli_strip = calculate_sli_strip_size(buffer.sli)
+
+    # insert entry in to first level index
+    let fs = mapping(header[].size.cuint, buffer.sli.cuint)
+    echo(header[])
+    echo(fs)
+    buffer.fla = buffer.fla or (1.uint32 shl fs.f.uint32)
+
+    # insert entry in to second level index
+    let bop = cast[int](buffer) + PoolHeader.sizeof + (fs.f.int * sli_strip.int)
+    var mask = cast[ptr uint32](bop)
+    mask[] = mask[] or (1'u32 shl fs.s.uint32)
+
+    # insert pointer in to second level slot
+    var unmasked = cast[ptr ptr BlockHeader](cast[uint](mask) + uint32.sizeof.uint + (pointer.sizeof.uint * fs.s))
+    if unmasked[] != nil:
+        unmasked[].prev_free = header
+        header.next_free = unmasked[]
+
+    unmasked[] = header
+
 proc initialize_pool*(buffer: pointer; buffer_size: cuint; sli: int = 4) =
     if sli notin 1..32:
         raise newException(RangeError, "Second Level Indices must be in range [1, 32]")
     # TODO flail if sli is also not a power of two
 
-    let sli_strip = calculate_sli_strip_size(sli)
     let sli_size = calculate_sli_size(sli)
 
     let minimum_pool_size = PoolHeader.sizeof +
@@ -111,24 +135,13 @@ proc initialize_pool*(buffer: pointer; buffer_size: cuint; sli: int = 4) =
 
     # fill out initial block
     var entry = cast[ptr BlockHeader](data_block_at)
+    entry.aleph = 0
     entry[].size = (buffer_size.int - data_block).uint
     entry.previous_physical_block = nil
     entry.next_free = nil
     entry.prev_free = nil
 
-    # insert entry in to first level index
-    let fs = mapping(buffer_size, sli.cuint)
-    header.fla += 1.uint32 shl fs.f.uint32
-    echo("TOP ", fs.f)
-
-    # insert entry in to second level index
-    let bop = cast[int](buffer) + PoolHeader.sizeof + (fs.f.int * sli_strip.int)
-    var mask = cast[ptr uint32](bop)
-    mask[] = 1'u32 shl fs.s.uint32
-
-    # insert pointer in to second level slot
-    var unmasked = cast[ptr pointer](cast[uint](mask) + uint32.sizeof.uint + (pointer.sizeof.uint * fs.s))
-    unmasked[] = cast[pointer](data_block_at)
+    index(header, entry)
 
 proc destroy_pool*(buffer: pointer) =
     var header = cast[ptr PoolHeader](buffer)
@@ -142,42 +155,23 @@ proc release*(buffer: pointer; blocc: pointer) =
     let sli_strip = calculate_sli_strip_size(poolheader.sli)
     let sli_size = calculate_sli_size(poolheader.sli)
 
-    # merge as many previous physical blocks as possible
-    if header[].previous_physical_block != nil:
-        while header[].previous_physical_block != nil:
-            var prior_header = cast[ptr BlockHeader](header[].previous_physical_block)
-            if prior_header[].busy == false:
-                echo("MERGE OK")
+    # first, inject the new block in to our free table
+    header[].busy = false
+    index(poolheader, header)
 
-                # work out pointers to deindex the block
-                var fs = mapping(prior_header[].size.cuint, poolheader.sli.cuint)
-                let bop = cast[uint](buffer) + PoolHeader.sizeof.uint + (sli_strip.cuint * fs.f)
-                var mask = cast[ptr uint32](bop)
-                var unmasked = cast[ptr pointer](cast[uint](mask) + uint32.sizeof.uint + (pointer.sizeof.uint * fs.s))
-                let z = 1 shl fs.s
+    # walk forward in physical blocks to find the rightmost block to start
+    # coalescence from
+    var walker = cast[uint](header) + header[].size
+    let e = (cast[uint](poolheader.size) + cast[uint](buffer))
+    while walker < e:
+        let prospect = cast[ptr BlockHeader](walker)
+        if prospect[].busy == false:
+            header = prospect
+            walker += header[].size
+        else:
+            break
 
-                # check if we need to update the mask
-                if unmasked[] == cast[pointer](prior_header):
-                    # cut block from tree
-                    unmasked[] = prior_header.next_free
-                    if unmasked[] == nil:
-                        # unmark this second level as open
-                        mask[] -= z.uint32
-                        # and possibly unmark at first level
-                        if mask[] == 0:
-                            poolheader.fla -= (1'u32 shl fs.f.uint32)
-
-                # merge blocks
-                prior_header[].size = prior_header[].size + header[].size + (FreeHeaderFieldCount * pointer.sizeof)
-
-                # update previous block pointer for next physical block
-                var next_block = cast[ptr BlockHeader](cast[uint](header) + header[].size)
-                if cast[uint](next_block) < (cast[uint](buffer) + poolheader.size):
-                    next_block.previous_physical_block = cast[pointer](prior_header)
-
-                # TODO maybe index new block and do another coalescing
-
-    # TODO index the new block
+    # 
 
 proc claim*(buffer: pointer; size: cuint): pointer =
     var header = cast[ptr PoolHeader](buffer)
@@ -193,27 +187,20 @@ proc claim*(buffer: pointer; size: cuint): pointer =
     for top in fs.f..31:
         let bip = 1 shl top
         if (header.fla and bip.uint32) == 0: continue
-        echo("OK 1 AT ", top)
         # unpack the bit mask
         let bop = cast[int](buffer) + PoolHeader.sizeof + (sli_strip * top.int)
         var mask = cast[ptr uint32](bop)
-        echo("MASK: ", mask[])
         if mask[] == 0: continue
-        echo("OK 2")
-        echo("MASK: ", mask[])
         for second in fs.s..31:
             let z = 1'u shl second
-            echo(z)
             if (mask[] and z) == 0: continue
-            echo("OK 3")
             var unmasked = cast[ptr pointer](cast[uint](mask) + uint32.sizeof.uint + (pointer.sizeof.uint * second))
             if unmasked[] == nil: continue
-            echo("OK 4")
             var blocc = cast[ptr BlockHeader](cast[pointer](unmasked[]))
             blocc[].busy = true
 
             # make sure we are grabbing sizes that are multiples of four
-            var grabass = size
+            var grabass = size + (FreeHeaderFieldCount * pointer.sizeof)
             if grabass < header.minimum_block.uint: grabass = header.minimum_block.cuint
             var offset = grabass mod 4
             grabass += offset
@@ -234,11 +221,22 @@ proc claim*(buffer: pointer; size: cuint): pointer =
                 xptr += (pointer.sizeof * 2) # step over control header
                 xptr += grabass # step over allocated region
                 var blocc2 = cast[ptr BlockHeader](xptr)
-                blocc2[].aleph = 0
-                blocc2[].size = bloccsize - (grabass + (pointer.sizeof * FreeHeaderFieldCount))
-                blocc2[].previous_physical_block = cast[pointer](blocc)
+                blocc2.aleph = 0
+                blocc2[].size = bloccsize - grabass
+                blocc2.previous_physical_block = blocc
+                blocc2.prev_free = blocc.prev_free
+                blocc2.next_free = blocc.next_free
+                if blocc.next_free != nil:
+                    blocc.next_free.prev_free = blocc2
                 blocc[].size = grabass
-                release(buffer, blocc2)
+                release(buffer, cast[pointer](cast[uint](blocc2) + (FreeHeaderFieldCount * pointer.sizeof)))
+            else:
+                if blocc[].next_free != nil:
+                    if blocc[].prev_free != nil:
+                        blocc[].prev_free.next_free = blocc[].next_free
+                        blocc[].next_free.prev_free = blocc[].prev_free
+                    else:
+                        blocc[].next_free.prev_free = nil
             
             # you don't need to change blocc's size
             # i thought you did but its already the size of the whole block
@@ -252,6 +250,8 @@ var owo = claim(buffer, 1024)
 assert owo != nil
 var uwu = claim(buffer, 1024)
 assert uwu != nil
+var awoo = claim(buffer, 1024)
+assert awoo != nil
 destroy_pool(buffer)
 
 echo(mapping(460, 4))
