@@ -229,7 +229,7 @@ proc claim*(buffer: pointer; size: cuint): pointer =
                 if blocc.next_free != nil:
                     blocc.next_free.prev_free = blocc2
                 blocc[].size = grabass
-                release(buffer, cast[pointer](cast[uint](blocc2) + (FreeHeaderFieldCount * pointer.sizeof)))
+                index(cast[ptr PoolHeader](buffer), blocc2)
             else:
                 if blocc[].next_free != nil:
                     if blocc[].prev_free != nil:
