@@ -176,6 +176,7 @@ proc destroy_pool*(buffer: pointer) =
 
 proc release*(buffer: pointer; blocc: pointer) =
     var poolheader = cast[ptr PoolHeader](buffer)
+    let e = cast[uint](buffer) + poolheader.size
     assert cast[uint](blocc) > FreeHeaderFieldCount * pointer.sizeof
     var header = cast[ptr BlockHeader](cast[uint](blocc) - (FreeHeaderFieldCount * pointer.sizeof))
 
@@ -211,7 +212,12 @@ proc release*(buffer: pointer; blocc: pointer) =
         prev[].size = prev[].size + header[].size
         header = prev
     
-    # TODO update previous physical block on the block that comes after us
+    # update previous physical block tag
+    let g = cast[uint](header) + header[].size
+    if g < e:
+        var x = cast[ptr BlockHeader](g)
+        x.previous_physical_block = header
+
     index(poolheader, header)
 
 proc claim*(buffer: pointer; size: cuint): pointer =
