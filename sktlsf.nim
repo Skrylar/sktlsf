@@ -104,6 +104,33 @@ proc index(buffer: ptr PoolHeader; header: ptr BlockHeader) =
 
     unmasked[] = header
 
+proc unindex(buffer: ptr PoolHeader; header: ptr BlockHeader) =
+    assert buffer != nil
+    assert header != nil
+
+    let sli_strip = calculate_sli_strip_size(buffer.sli)
+    let sli_size = calculate_sli_size(buffer.sli)
+
+    let fs = mapping(header[].size.cuint, buffer.sli.cuint)
+    var mask = cast[ptr uint32](cast[uint](buffer) + PoolHeader.sizeof.uint + (fs.f.uint * sli_strip.uint))
+    var unmasked = cast[ptr ptr BlockHeader](cast[uint](mask) + uint32.sizeof.uint + (pointer.sizeof.uint * fs.s.uint))
+
+    # cut block from tree
+    if unmasked[] == header:
+        unmasked[] = header.next_free
+
+    if unmasked[] == nil:
+        # unmark this second level as open
+        mask[] -= 1'u32 shl fs.s.uint32
+        # and possibly unmark at first level
+        if mask[] == 0:
+            buffer.fla -= (1'u32 shl fs.f.uint32)
+    
+    if header.prev_free != nil:
+        header.prev_free.next_free = header.next_free
+    if header.next_free != nil:
+        header.next_free.prev_free = header.prev_free
+
 proc initialize_pool*(buffer: pointer; buffer_size: cuint; sli: int = 4) =
     if sli notin 1..32:
         raise newException(RangeError, "Second Level Indices must be in range [1, 32]")
@@ -161,17 +188,31 @@ proc release*(buffer: pointer; blocc: pointer) =
 
     # walk forward in physical blocks to find the rightmost block to start
     # coalescence from
-    var walker = cast[uint](header) + header[].size
-    let e = (cast[uint](poolheader.size) + cast[uint](buffer))
-    while walker < e:
-        let prospect = cast[ptr BlockHeader](walker)
-        if prospect[].busy == false:
-            header = prospect
-            walker += header[].size
-        else:
-            break
+    block forward_walk:
+        var walker = cast[uint](header) + header[].size
+        let e = (cast[uint](poolheader.size) + cast[uint](buffer))
+        while walker < e:
+            let prospect = cast[ptr BlockHeader](walker)
+            if prospect[].busy == false:
+                header = prospect
+                walker += header[].size
+            else:
+                break
 
-    # 
+    # now walk backwards through blocks, unindexing and merging free ones
+    unindex(poolheader, header)
+    while true:
+        var prev = header.previous_physical_block
+        if prev == nil: break
+        if prev[].busy == true: break
+
+        unindex(poolheader, prev)
+
+        prev[].size = prev[].size + header[].size
+        header = prev
+    
+    # TODO update previous physical block on the block that comes after us
+    index(poolheader, header)
 
 proc claim*(buffer: pointer; size: cuint): pointer =
     var header = cast[ptr PoolHeader](buffer)
